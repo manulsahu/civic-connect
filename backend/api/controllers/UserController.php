@@ -566,8 +566,11 @@ class UserController {
                 sendError('Please verify your email address first', 403);
             }
 
-            // Generate reset code
-            $reset_code = generateOTP(6);
+            $dev_reset_enabled = filter_var($_ENV['DEV_PASSWORD_RESET'] ?? false, FILTER_VALIDATE_BOOLEAN);
+            $configured_reset_code = trim((string)($_ENV['DEV_PASSWORD_RESET_CODE'] ?? ''));
+            $reset_code = $dev_reset_enabled && preg_match('/^\d{6}$/', $configured_reset_code)
+                ? $configured_reset_code
+                : generateOTP(6);
             $reset_expires = date('Y-m-d H:i:s', strtotime('+10 minutes'));
 
             $stmt = $this->pdo->prepare("
@@ -577,12 +580,13 @@ class UserController {
             ");
             $stmt->execute([$reset_code, $reset_expires, $user['id']]);
 
-            // Send password reset email
-            $emailSent = $this->sendPasswordResetEmail($data['email'], $user['first_name'], $reset_code);
-            
-            if (!$emailSent) {
-                error_log("CRITICAL: Failed to send password reset email to: " . $data['email']);
-                sendError('Failed to send reset code. Please try again later.', 500);
+            if (!$dev_reset_enabled) {
+                $emailSent = $this->sendPasswordResetEmail($data['email'], $user['first_name'], $reset_code);
+
+                if (!$emailSent) {
+                    error_log("CRITICAL: Failed to send password reset email to: " . $data['email']);
+                    sendError('Failed to send reset code. Please try again later.', 500);
+                }
             }
 
             // Log audit trail
@@ -590,7 +594,9 @@ class UserController {
 
             sendResponse([
                 'success' => true,
-                'message' => 'Password reset code sent to your email address'
+                'message' => $dev_reset_enabled
+                    ? 'Development reset code created. Use the configured local reset code.'
+                    : 'Password reset code sent to your email address'
             ], 200);
 
         } catch (PDOException $e) {
@@ -754,8 +760,9 @@ class UserController {
             ");
             $stmt->execute([$password_hash, $user['id']]);
 
-            // Send confirmation email
-            $this->sendPasswordChangedEmail($data['email'], $user['first_name']);
+            if (!filter_var($_ENV['DEV_PASSWORD_RESET'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+                $this->sendPasswordChangedEmail($data['email'], $user['first_name']);
+            }
 
             // Log audit trail
             Middleware::logAuditTrail($user['id'], 'PASSWORD_RESET_COMPLETED', 'users', $user['id']);
